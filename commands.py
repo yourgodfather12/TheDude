@@ -2,25 +2,44 @@ import os
 import discord
 from discord.ext import commands
 from datetime import datetime, timedelta
-import mysql.connector
-import logging
-import requests
+from sqlalchemy import create_engine, Column, Integer, String, DateTime
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+# Configure SQLAlchemy engine and session
+DATABASE_URL = "mysql://yourusername:yourpassword@localhost/yourdatabase"
+engine = create_engine(DATABASE_URL)
+Session = sessionmaker(bind=engine)
 
-# Establish MySQL connection
-db = mysql.connector.connect(
-    host="localhost",
-    user="yourusername",
-    password="yourpassword",
-    database="yourdatabase"
-)
-cursor = db.cursor()
+# Define SQLAlchemy Base
+Base = declarative_base()
+
+# Define UserAttachment table
+class UserAttachment(Base):
+    __tablename__ = 'user_attachments'
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer)
+    message_id = Column(Integer)
+    file_path = Column(String)
+    posted_at = Column(DateTime, default=datetime.utcnow)
+
+
+# Define ModerationLog table
+class ModerationLog(Base):
+    __tablename__ = 'moderation_log'
+
+    id = Column(Integer, primary_key=True)
+    moderator_id = Column(Integer)
+    target_id = Column(Integer)
+    action_type = Column(String)
+    reason = Column(String)
+    timestamp = Column(DateTime, default=datetime.utcnow)
+
 
 # Define intents
 intents = discord.Intents.default()
-intents.messages = True  # Enable the 'messages' intent to track message events
+intents.messages = True
 
 # Prefix for bot commands
 PREFIX = './'
@@ -35,31 +54,25 @@ def contains_image_or_video(message):
         ('jpg', 'jpeg', 'png', 'gif', 'webp', 'mp4', 'mov', 'avi')) for attachment in message.attachments)
 
 
-# Function for reverse image search using Yandex
-def reverse_image_search(image_path):
-    # Upload image to Yandex Image Search API
-    url = 'https://yandex.com/images/search'
-    files = {'upfile': open(image_path, 'rb')}
-    response = requests.post(url, files=files)
-
-    # Get the URL of the search results
-    if response.status_code == 200:
-        return response.url
-    else:
-        return None
-
-
 # Event: Bot is ready
 @bot.event
 async def on_ready():
     await bot.change_presence(activity=discord.Game(name="with code"))
-    logging.info(f'Logged in as {bot.user.name}')
 
 
 # Event: Error handling
 @bot.event
 async def on_command_error(ctx, error):
-    logging.error(f'Error executing command: {error}')
+    if isinstance(error, commands.CommandNotFound):
+        await ctx.send("Command not found.")
+    elif isinstance(error, commands.MissingPermissions):
+        await ctx.send("You don't have permission to do that.")
+    elif isinstance(error, commands.MissingRequiredArgument):
+        await ctx.send("Missing required argument.")
+    elif isinstance(error, commands.BadArgument):
+        await ctx.send("Invalid argument provided.")
+    else:
+        await ctx.send(f"An error occurred: {error}")
 
 
 # Event: Welcome Message
@@ -82,18 +95,18 @@ async def on_member_remove(member):
 
 
 # Command: Reverse Image Search
+def reverse_image_search(attachment):
+    pass
+
+
 @bot.command(name='reverse', help='Performs a reverse image search on an attached image or video.')
 async def reverse_image(ctx):
     if ctx.message.attachments:
         for attachment in ctx.message.attachments:
             if attachment.width is not None or attachment.height is not None or attachment.url.endswith(
                     ('jpg', 'jpeg', 'png', 'gif', 'webp', 'mp4', 'mov', 'avi')):
-                # Save the attachment to a temporary file
-                temp_file = f"temp_image{os.path.splitext(attachment.filename)[1]}"
-                await attachment.save(temp_file)
-
                 # Perform reverse image search
-                reverse_url = reverse_image_search(temp_file)
+                reverse_url = reverse_image_search(attachment)
                 if reverse_url:
                     await ctx.send(f'Reverse image search: {reverse_url}')
                 else:
@@ -131,7 +144,6 @@ async def change_nickname(ctx, member: discord.Member, nickname):
 async def kick_member(ctx, member: discord.Member, *, reason=None):
     await member.kick(reason=reason)
     await ctx.send(f'{member.mention} has been kicked from the server.')
-    log_moderation_action(ctx.author.id, member.id, 'kick', reason)
 
 
 # Command: Ban Member
@@ -140,7 +152,6 @@ async def kick_member(ctx, member: discord.Member, *, reason=None):
 async def ban_member(ctx, member: discord.Member, *, reason=None):
     await member.ban(reason=reason)
     await ctx.send(f'{member.mention} has been banned from the server.')
-    log_moderation_action(ctx.author.id, member.id, 'ban', reason)
 
 
 # Command: Clear Messages
@@ -183,10 +194,7 @@ async def send_dm(ctx, member: discord.Member, *, message):
 @bot.command(name='mute', help='Mutes a member in the server.')
 @commands.has_permissions(manage_roles=True)
 async def mute_member(ctx, member: discord.Member):
-    muted_role = discord.utils.get(ctx.guild.roles, name='Muted')
-    if not muted_role:
-        muted_role = await ctx.guild.create_role(name='Muted')
-
+    muted_role = await get_or_create_muted_role(ctx.guild)
     await member.add_roles(muted_role)
     await ctx.send(f'{member.mention} has been muted.')
     log_moderation_action(ctx.author.id, member.id, 'mute')
@@ -196,7 +204,7 @@ async def mute_member(ctx, member: discord.Member):
 @bot.command(name='unmute', help='Unmutes a member in the server.')
 @commands.has_permissions(manage_roles=True)
 async def unmute_member(ctx, member: discord.Member):
-    muted_role = discord.utils.get(ctx.guild.roles, name='Muted')
+    muted_role = await get_or_create_muted_role(ctx.guild)
     if muted_role in member.roles:
         await member.remove_roles(muted_role)
         await ctx.send(f'{member.mention} has been unmuted.')
@@ -222,8 +230,9 @@ async def check_posts(ctx, member: discord.Member):
     directory_name = f"{member.id}_{member.name}"  # Using member ID and name to create a unique directory name
     os.makedirs(directory_name, exist_ok=True)
 
-    # Store data in MySQL database and save attachments
+    # Store data in database and save attachments
     try:
+        session = Session()
         for message in user_messages:
             # Get the first couple of words from the message content
             content_words = message.content.split()[:2]
@@ -235,14 +244,14 @@ async def check_posts(ctx, member: discord.Member):
                 await attachment.save(file_path)
 
                 # Insert the file path into the database
-                cursor.execute("INSERT INTO user_attachments (user_id, message_id, file_path) VALUES (%s, %s, %s)",
-                               (member.id, message.id, file_path))
-                db.commit()
+                attachment_entry = UserAttachment(user_id=member.id, message_id=message.id, file_path=file_path)
+                session.add(attachment_entry)
 
+        session.commit()
+        session.close()
         await ctx.send(
             f'{len(user_messages)} images or videos posted by {member.mention} in the past 5 days have been saved and data stored successfully.')
     except Exception as e:
-        db.rollback()
         await ctx.send(f'Error storing data: {str(e)}')
 
 
@@ -293,13 +302,10 @@ async def call_posts(ctx):
 
         for member in members_with_role:
             try:
-                cursor.execute("SELECT COUNT(*) FROM user_attachments WHERE user_id = %s AND DATE(posted_at) BETWEEN %s AND %s",
-                               (member.id, start_date.date(), end_date.date()))
-                result = cursor.fetchone()
-                image_video_count = result[0] if result else 0
-                posts_info.append((member.display_name, image_video_count))
+                user_posts_count = get_user_posts_count(member, start_date, end_date)
+                posts_info.append((member.display_name, user_posts_count))
             except Exception as e:
-                logging.error(f'Error querying database: {str(e)}')
+                print(f'Error querying posts count for {member.display_name}: {str(e)}')
 
         if posts_info:
             # Sort posts_info by the number of image or video posts in descending order
@@ -319,14 +325,31 @@ async def call_posts(ctx):
 
 # Function: Log Moderation Action
 def log_moderation_action(moderator_id, target_id, action_type, reason=None):
-    try:
-        cursor.execute(
-            "INSERT INTO moderation_log (moderator_id, target_id, action_type, reason) VALUES (%s, %s, %s, %s)",
-            (moderator_id, target_id, action_type, reason))
-        db.commit()
-    except Exception as e:
-        db.rollback()
-        logging.error(f'Error logging moderation action: {str(e)}')
+    session = Session()
+    log_entry = ModerationLog(moderator_id=moderator_id, target_id=target_id, action_type=action_type, reason=reason)
+    session.add(log_entry)
+    session.commit()
+    session.close()
+
+
+# Function: Get or Create Muted Role
+async def get_or_create_muted_role(guild):
+    muted_role = discord.utils.get(guild.roles, name='Muted')
+    if not muted_role:
+        muted_role = await guild.create_role(name='Muted')
+    return muted_role
+
+
+# Function: Get User Posts Count
+def get_user_posts_count(member, start_date, end_date):
+    session = Session()
+    user_posts_count = session.query(UserAttachment).filter(
+        UserAttachment.user_id == member.id,
+        UserAttachment.posted_at >= start_date,
+        UserAttachment.posted_at <= end_date
+    ).count()
+    session.close()
+    return user_posts_count
 
 
 # Run the bot with the token
