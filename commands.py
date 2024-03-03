@@ -252,7 +252,9 @@ async def check_posts(ctx, member: discord.Member):
         await ctx.send(
             f'{len(user_messages)} images or videos posted by {member.mention} in the past 5 days have been saved and data stored successfully.')
     except Exception as e:
-        await ctx.send(f'Error storing data: {str(e)}')
+        # Log the error
+        print(f"Error storing data for {member}: {e}")
+        await ctx.send('An error occurred while processing the data. Please try again later.')
 
 
 # Command: Help
