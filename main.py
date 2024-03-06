@@ -77,4 +77,4 @@ async def on_command(ctx):
         f.write(f"{datetime.now()} - {ctx.author.id} - {ctx.guild.id} - {ctx.command.name}\n")
 
 # Run the bot with the token
-bot.run("MTIwOTczMDY4Mjk1NjU1NDM0Mg.G823aN.gUq4GJYneCqebGXGTotjnMcMP1yENiTelN6LRA")
+bot.run("BOT_TOKEN_HERE")
