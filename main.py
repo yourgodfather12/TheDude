@@ -7,7 +7,7 @@ from sqlalchemy.orm import sessionmaker
 from datetime import datetime
 from dotenv import load_dotenv
 import logging
-from tqdm import tqdm
+from rich.progress import Progress, BarColumn, TextColumn
 
 # Load environment variables from a .env file
 load_dotenv()
@@ -55,26 +55,30 @@ bot = commands.Bot(command_prefix=PREFIX, intents=intents)
 
 # Function to save attachments
 async def save_attachments(message, channel_name, total_downloads_left):
-    for attachment in tqdm(message.attachments, desc=f'Downloading attachments ({total_downloads_left} left)', unit='B', unit_scale=True, leave=False):
-        directory_path = f"F:/discord/{message.guild.id}/{channel_name}/"
-        file_path = os.path.join(directory_path, attachment.filename)
-        if not os.path.exists(file_path):
-            os.makedirs(directory_path, exist_ok=True)
-            logger.info(f"Downloading attachment: {attachment.filename}")
-            try:
-                await attachment.save(file_path)
-                logger.info(f"Attachment saved: {attachment.filename} at {file_path}")
-            except Exception as e:
-                logger.error(f"Error saving attachment {attachment.filename}: {e}")
-        else:
-            logger.info(f"Skipping attachment: {attachment.filename} (already exists)")
+    with Progress(
+        BarColumn(bar_width=None),
+        TextColumn("[progress.description]{task.description}"),
+    ) as progress:
+        task = progress.add_task(description=f'Downloading attachments', total=total_downloads_left)
+        for attachment in message.attachments:
+            directory_path = f"F:/discord/{message.guild.id}/{channel_name}/"
+            file_path = os.path.join(directory_path, attachment.filename)
+            if not os.path.exists(file_path):
+                os.makedirs(directory_path, exist_ok=True)
+                logger.info(f"Downloading attachment: {attachment.filename}")
+                try:
+                    await attachment.save(file_path)
+                    logger.info(f"Attachment saved: {attachment.filename} at {file_path}")
+                except Exception as e:
+                    logger.error(f"Error saving attachment {attachment.filename}: {e}")
+            else:
+                logger.info(f"Skipping attachment: {attachment.filename} (already exists)")
+            progress.update(task, advance=1)
 
 # Event handler for when the bot is ready
 @bot.event
 async def on_ready():
     logger.info('Bot is ready.')
-
-    total_downloads_left = 0
 
     # Loop through all guilds the bot is a member of
     for guild in bot.guilds:
@@ -83,10 +87,10 @@ async def on_ready():
             # Check if the channel is a text channel
             if isinstance(channel, discord.TextChannel):
                 logger.info(f"Fetching message history for channel: {channel.name}")
+                total_downloads_left = 0
                 async for message in channel.history(limit=None):  # Fetch all messages in the channel
                     total_downloads_left += len(message.attachments)
                     await save_attachments(message, channel.name, total_downloads_left)
-                    total_downloads_left -= len(message.attachments)
 
 # Event handler for command errors
 @bot.event
@@ -109,5 +113,8 @@ async def on_command(ctx):
     with open('logs.txt', 'a') as f:
         f.write(f"{datetime.now()} - {ctx.author.id} - {ctx.guild.id} - {ctx.command.name}\n")
 
+# Load the leakcheck cog
+bot.load_extension('leakcheck')
+
 # Run the bot with the provided token
-bot.run("BOT_TOKEN_HERE")
+bot.run("YOUR_BOT_TOKEN")
