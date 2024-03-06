@@ -24,6 +24,7 @@ Base = declarative_base()
 Base.metadata.create_all(engine)
 Session = sessionmaker(bind=engine)
 
+
 # Define SQLAlchemy models
 class UserAttachment(Base):
     __tablename__ = 'user_attachments'
@@ -33,6 +34,7 @@ class UserAttachment(Base):
     message_id = Column(Integer)
     file_path = Column(String)
     posted_at = Column(DateTime, default=datetime.utcnow)
+
 
 class ServerChannel(Base):
     __tablename__ = 'server_channels'
@@ -44,6 +46,7 @@ class ServerChannel(Base):
     type = Column(String)
     position = Column(Integer)
 
+
 # Define intents
 intents = discord.Intents.all()
 
@@ -53,11 +56,12 @@ PREFIX = './'
 # Create a separate commands.Bot instance with all permissions
 bot = commands.Bot(command_prefix=PREFIX, intents=intents)
 
+
 # Function to save attachments
 async def save_attachments(message, channel_name, total_downloads_left):
     with Progress(
-        BarColumn(bar_width=None),
-        TextColumn("[progress.description]{task.description}"),
+            BarColumn(bar_width=None),
+            TextColumn("[progress.description]{task.description}"),
     ) as progress:
         task = progress.add_task(description=f'Downloading attachments', total=total_downloads_left)
         for attachment in message.attachments:
@@ -74,6 +78,7 @@ async def save_attachments(message, channel_name, total_downloads_left):
             else:
                 logger.info(f"Skipping attachment: {attachment.filename} (already exists)")
             progress.update(task, advance=1)
+
 
 # Event handler for when the bot is ready
 @bot.event
@@ -92,6 +97,10 @@ async def on_ready():
                     total_downloads_left += len(message.attachments)
                     await save_attachments(message, channel.name, total_downloads_left)
 
+    # Print message to terminal indicating that downloading is complete
+    print("Finished downloading all current images and videos. Waiting for new content.")
+
+
 # Event handler for command errors
 @bot.event
 async def on_command_error(ctx, error):
@@ -107,14 +116,22 @@ async def on_command_error(ctx, error):
         await ctx.send(f"An error occurred: {error}")
         logger.error("An error occurred", exc_info=error)
 
+
 # Event handler for logging command usage
 @bot.event
 async def on_command(ctx):
     with open('logs.txt', 'a') as f:
         f.write(f"{datetime.now()} - {ctx.author.id} - {ctx.guild.id} - {ctx.command.name}\n")
 
-# Load the leakcheck cog
+
+# Load cogs
 bot.load_extension('leakcheck')
+bot.load_extension('currency')
+bot.load_extension('commands')
+bot.load_extension('check_your_counts')
+bot.load_extension('fake_nude')
+bot.load_extension('role_management')
+bot.load_extension('server_build')
 
 # Run the bot with the provided token
 bot.run("YOUR_BOT_TOKEN")
