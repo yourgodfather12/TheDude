@@ -88,6 +88,17 @@ class RoleManagementCog(commands.Cog):
         else:
             await ctx.send("You do not have permission to use this command.")
 
+    @commands.command()
+    @commands.has_permissions(administrator=True)
+    async def log_role_action(self, ctx, action, role_name):
+        """Log role management actions."""
+        # You can customize this function to suit your logging requirements
+        log_channel = discord.utils.get(ctx.guild.channels, name='role-log')
+        if log_channel:
+            await log_channel.send(f"Action: {action}, Role: {role_name}, User: {ctx.author}")
+        else:
+            await ctx.send("Log channel not found. Please create a channel named 'role-log'.")
+
     # Setup function to add the cog
     @classmethod
     def setup(cls, bot):
