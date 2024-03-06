@@ -1,13 +1,17 @@
 import discord
 from discord.ext import commands
 
+def is_admin_or_mod(ctx):
+    """Check if the user is an administrator or moderator."""
+    return ctx.author.guild_permissions.administrator or any(role.permissions.manage_messages for role in ctx.author.roles)
 
 class CommandCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
     # Command: Ping
-    @commands.command()
+    @commands.command(aliases=['p'])
+    @commands.check(is_admin_or_mod)
     async def ping(self, ctx):
         """Check bot's latency."""
         latency = self.bot.latency * 1000  # Convert to milliseconds
@@ -15,18 +19,21 @@ class CommandCog(commands.Cog):
 
     # Command: Hello
     @commands.command()
+    @commands.check(is_admin_or_mod)
     async def hello(self, ctx):
         """Greet the user."""
         await ctx.send(f'Hello, {ctx.author.mention}!')
 
     # Command: Echo
     @commands.command()
+    @commands.check(is_admin_or_mod)
     async def echo(self, ctx, *, message):
         """Echo back the provided message."""
         await ctx.send(message)
 
     # Command: Kick
     @commands.command()
+    @commands.check(is_admin_or_mod)
     @commands.has_permissions(kick_members=True)
     async def kick(self, ctx, member: commands.MemberConverter, *, reason=None):
         """Kick a member from the server."""
@@ -35,6 +42,7 @@ class CommandCog(commands.Cog):
 
     # Command: Ban
     @commands.command()
+    @commands.check(is_admin_or_mod)
     @commands.has_permissions(ban_members=True)
     async def ban(self, ctx, member: commands.MemberConverter, *, reason=None):
         """Ban a member from the server."""
@@ -43,6 +51,7 @@ class CommandCog(commands.Cog):
 
     # Command: Unban
     @commands.command()
+    @commands.check(is_admin_or_mod)
     @commands.has_permissions(ban_members=True)
     async def unban(self, ctx, *, member):
         """Unban a member from the server."""
@@ -61,6 +70,7 @@ class CommandCog(commands.Cog):
 
     # Command: Clear
     @commands.command()
+    @commands.check(is_admin_or_mod)
     @commands.has_permissions(manage_messages=True)
     async def clear(self, ctx, amount: int):
         """Clear a specified number of messages."""
@@ -76,6 +86,7 @@ class CommandCog(commands.Cog):
 
     # Command: Avatar
     @commands.command()
+    @commands.check(is_admin_or_mod)
     async def avatar(self, ctx, member: commands.MemberConverter = None):
         """Show the avatar of a user."""
         member = member or ctx.author
@@ -85,6 +96,7 @@ class CommandCog(commands.Cog):
 
     # Command: Userinfo
     @commands.command()
+    @commands.check(is_admin_or_mod)
     async def userinfo(self, ctx, member: commands.MemberConverter = None):
         """Display detailed information about a user."""
         member = member or ctx.author
@@ -102,6 +114,7 @@ class CommandCog(commands.Cog):
 
     # Command: Serverinfo
     @commands.command()
+    @commands.check(is_admin_or_mod)
     async def serverinfo(self, ctx):
         """Display information about the current server."""
         guild = ctx.guild
@@ -120,6 +133,7 @@ class CommandCog(commands.Cog):
 
     # Command: List all commands
     @commands.command(name="help")
+    @commands.check(is_admin_or_mod)
     async def list_commands(self, ctx, command_name: str = None):
         """List all available commands or show help for a specific command."""
         if command_name:
@@ -136,5 +150,3 @@ class CommandCog(commands.Cog):
     @classmethod
     def setup(cls, bot):
         bot.add_cog(cls(bot))
-
-# You may need to replace `bot.add_cog(cls(bot))` with `bot.add_cog(CommandCog(bot))` if necessary
