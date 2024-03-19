@@ -1,4 +1,5 @@
 import os
+import logging
 import discord
 from discord.ext import commands
 from sqlalchemy import create_engine, Column, Integer, String, DateTime
@@ -6,15 +7,16 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from datetime import datetime
 from dotenv import load_dotenv
-import logging
-from rich.progress import Progress, BarColumn, TextColumn
+import aiofiles
+import aiohttp
+import asyncio
+import re
 
 # Load environment variables from a .env file
 load_dotenv()
 
 # Configure logging
-LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
-logging.basicConfig(level=LOG_LEVEL)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Configure SQLAlchemy engine and session
@@ -23,7 +25,6 @@ engine = create_engine(DATABASE_URL)
 Base = declarative_base()
 Base.metadata.create_all(engine)
 Session = sessionmaker(bind=engine)
-
 
 # Define SQLAlchemy models
 class UserAttachment(Base):
@@ -35,103 +36,85 @@ class UserAttachment(Base):
     file_path = Column(String)
     posted_at = Column(DateTime, default=datetime.utcnow)
 
-
-class ServerChannel(Base):
-    __tablename__ = 'server_channels'
-
-    id = Column(Integer, primary_key=True)
-    guild_id = Column(Integer)
-    channel_id = Column(Integer)
-    name = Column(String)
-    type = Column(String)
-    position = Column(Integer)
-
-
-# Define intents
-intents = discord.Intents.all()
-
 # Prefix for bot commands
-PREFIX = './'
+PREFIX = '!'
 
 # Create a separate commands.Bot instance with all permissions
-bot = commands.Bot(command_prefix=PREFIX, intents=intents)
+bot = commands.Bot(command_prefix=PREFIX, intents=discord.Intents.all())
 
-
-# Function to save attachments
-async def save_attachments(message, channel_name, total_downloads_left):
-    with Progress(
-            BarColumn(bar_width=None),
-            TextColumn("[progress.description]{task.description}"),
-    ) as progress:
-        task = progress.add_task(description=f'Downloading attachments', total=total_downloads_left)
-        for attachment in message.attachments:
-            directory_path = f"F:/discord/{message.guild.id}/{channel_name}/"
-            file_path = os.path.join(directory_path, attachment.filename)
-            if not os.path.exists(file_path):
-                os.makedirs(directory_path, exist_ok=True)
-                logger.info(f"Downloading attachment: {attachment.filename}")
-                try:
-                    await attachment.save(file_path)
-                    logger.info(f"Attachment saved: {attachment.filename} at {file_path}")
-                except Exception as e:
-                    logger.error(f"Error saving attachment {attachment.filename}: {e}")
+# Function to download attachment asynchronously
+async def download_attachment(session, attachment, file_path):
+    try:
+        async with session.get(attachment.url) as resp:
+            if resp.status == 200:
+                async with aiofiles.open(file_path, 'wb') as f:
+                    await f.write(await resp.read())
+                logger.info(f"Attachment saved: {file_path}")
             else:
-                logger.info(f"Skipping attachment: {attachment.filename} (already exists)")
-            progress.update(task, advance=1)
+                logger.error(f"Failed to download attachment: {attachment.url}")
+    except aiohttp.ClientError as e:
+        logger.error(f"Error downloading attachment: {e}")
 
+# Function to save attachments with optimized file handling
+async def save_attachments_with_progress(message, channel_name):
+    attachments = message.attachments
+    total_attachments = len(attachments)
+    data_dir = 'data'  # Directory named 'data' within the tool
+
+    # Ensure the 'data' directory exists
+    if not os.path.exists(data_dir):
+        os.makedirs(data_dir)
+
+    # Create subdirectory for the channel if it doesn't exist
+    channel_dir = os.path.join(data_dir, channel_name)
+    if not os.path.exists(channel_dir):
+        os.makedirs(channel_dir)
+
+    # Get first two words of each post with an attachment
+    post_content = message.content.split(maxsplit=2)[:2]
+    post_dir_name = ' '.join(re.findall(r'\w+', ' '.join(post_content))).lower()
+
+    # Create subdirectory for the post if it doesn't exist
+    post_dir = os.path.join(channel_dir, post_dir_name)
+    if not os.path.exists(post_dir):
+        os.makedirs(post_dir)
+
+    async with aiohttp.ClientSession() as session:
+        tasks = []
+        for index, attachment in enumerate(attachments, start=1):
+            filename = attachment.filename
+            file_name_without_extension, extension = os.path.splitext(filename)
+            file_path = os.path.join(post_dir, f"{file_name_without_extension}_{index}{extension}")
+
+            # Check if the file already exists
+            if not os.path.exists(file_path):
+                # Schedule the download task
+                task = asyncio.create_task(download_attachment(session, attachment, file_path))
+                tasks.append(task)
+            else:
+                logger.info(f"Skipping already saved attachment: {file_path}")
+
+        # Wait for all download tasks to complete
+        await asyncio.gather(*tasks)
 
 # Event handler for when the bot is ready
 @bot.event
 async def on_ready():
-    logger.info('Bot is ready.')
+    logger.info('Bot is ready and running.')
+    # Print feedback in terminal
+    print('Bot is ready and running.')
 
-    # Loop through all guilds the bot is a member of
+    # Example: Fetch message history for all channels in all guilds and save attachments
     for guild in bot.guilds:
-        # Loop through all channels in the guild
-        for channel in guild.channels:
-            # Check if the channel is a text channel
-            if isinstance(channel, discord.TextChannel):
-                logger.info(f"Fetching message history for channel: {channel.name}")
-                total_downloads_left = 0
-                async for message in channel.history(limit=None):  # Fetch all messages in the channel
-                    total_downloads_left += len(message.attachments)
-                    await save_attachments(message, channel.name, total_downloads_left)
-
-    # Print message to terminal indicating that downloading is complete
-    print("Finished downloading all current images and videos. Waiting for new content.")
-
-
-# Event handler for command errors
-@bot.event
-async def on_command_error(ctx, error):
-    if isinstance(error, commands.CommandNotFound):
-        await ctx.send("Command not found.")
-    elif isinstance(error, commands.MissingPermissions):
-        await ctx.send("You don't have permission to do that.")
-    elif isinstance(error, commands.MissingRequiredArgument):
-        await ctx.send("Missing required argument.")
-    elif isinstance(error, commands.BadArgument):
-        await ctx.send("Invalid argument provided.")
-    else:
-        await ctx.send(f"An error occurred: {error}")
-        logger.error("An error occurred", exc_info=error)
-
-
-# Event handler for logging command usage
-@bot.event
-async def on_command(ctx):
-    with open('logs.txt', 'a') as f:
-        f.write(f"{datetime.now()} - {ctx.author.id} - {ctx.guild.id} - {ctx.command.name}\n")
-
-
-# Load cogs
-bot.load_extension('leakcheck')
-bot.load_extension('currency')
-bot.load_extension('commands')
-bot.load_extension('check_your_counts')
-bot.load_extension('fake_nude')
-bot.load_extension('role_management')
-bot.load_extension('server_build')
+        for channel in guild.text_channels:
+            logger.info(f"Fetching message history for channel: {channel.name}")
+            try:
+                async for message in channel.history(limit=None):
+                    if message.attachments:
+                        # Call the function to save attachments with progress
+                        await save_attachments_with_progress(message, channel.name)
+            except discord.HTTPException as e:
+                logger.error(f"Error fetching message history: {e}")
 
 # Run the bot with the provided token
-bot.run("YOUR_BOT_TOKEN")
+bot.run('your_bot_token')
