@@ -12,6 +12,10 @@ import aiohttp
 import asyncio
 import re
 from collections import defaultdict
+from sqlalchemy.exc import OperationalError
+import time
+from sqlalchemy.orm import scoped_session
+from sqlalchemy.pool import QueuePool
 
 # Load environment variables from a .env file
 load_dotenv()
@@ -19,15 +23,20 @@ load_dotenv()
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+import os
 
-# Configure SQLAlchemy engine and session
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///bot_data.db")
-engine = create_engine(DATABASE_URL)
+# Define the path to the SQLite database file
+DATABASE_FILE = os.path.join(os.getcwd(), 'bot_data.db')
+
+# Construct the SQLite database URL
+DATABASE_URL = f"sqlite:///{DATABASE_FILE}"
+
+# Configure SQLAlchemy engine and session with a connection pool
+engine = create_engine(DATABASE_URL, poolclass=QueuePool)
 Base = declarative_base()
 Base.metadata.create_all(engine)
 Session = sessionmaker(bind=engine)
 
-# Define SQLAlchemy models
 class UserAttachment(Base):
     __tablename__ = 'user_attachments'
 
@@ -258,6 +267,47 @@ async def on_member_join(member):
     if must_verify_role:
         # Assign the "Must Verify" role to the new member
         await member.add_roles(must_verify_role)
+
+# Maximum number of retries
+MAX_RETRIES = 5
+
+# Function to create session with connection pooling
+def get_session():
+    return Session()
+
+@bot.command(name='cp')
+async def check_posts_with_attachments(ctx):
+    # Check if the invoker has the "Member" role
+    member_role = discord.utils.get(ctx.guild.roles, name='Member')
+    if member_role in ctx.author.roles:
+        # Get the current date and time
+        current_time = datetime.now(timezone.utc)
+        # Calculate the start date for the past 7 days
+        start_date = current_time - timedelta(days=7)
+
+        # Retry the database query with exponential backoff
+        retry_count = 0
+        while retry_count < MAX_RETRIES:
+            try:
+                # Query the database to count the number of posts with attachments made by the user in the past 7 days
+                session = get_session()
+                attachment_count = session.query(UserAttachment).filter(UserAttachment.user_id == ctx.author.id,
+                                                                        UserAttachment.posted_at >= start_date).count()
+                await ctx.send(f"You have made {attachment_count} post(s) with attachments in the past 7 days.")
+                session.close()  # Close the session after use
+                break  # Exit the loop if the query is successful
+            except Exception as e:
+                logger.error(f"Error querying database: {e}")
+                if retry_count < MAX_RETRIES - 1:
+                    delay = 2 ** retry_count  # Exponential backoff: 1, 2, 4, 8, 16 seconds...
+                    logger.info(f"Retrying database query in {delay} seconds...")
+                    await asyncio.sleep(delay)
+                else:
+                    await ctx.send("Failed to fetch post count due to database lock. Please try again later.")
+                    break  # Exit the loop if maximum retries reached
+                retry_count += 1
+    else:
+        await ctx.send("You need to have the Member role to use this command.")
 
 # Command to build/setup the server
 @bot.command(name='build', aliases=['setup'])
