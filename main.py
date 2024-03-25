@@ -1,11 +1,12 @@
 import os
 import logging
 import discord
+import json  # Add this line
 from discord.ext import commands
 from sqlalchemy import create_engine, Column, Integer, String, DateTime
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
-from datetime import datetime, timedelta, timezone  # Import timezone class
+from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 import aiofiles
 import aiohttp
@@ -23,7 +24,6 @@ load_dotenv()
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-import os
 
 # Define the path to the SQLite database file
 DATABASE_FILE = os.path.join(os.getcwd(), 'bot_data.db')
@@ -37,20 +37,16 @@ Base = declarative_base()
 Base.metadata.create_all(engine)
 Session = sessionmaker(bind=engine)
 
-class UserAttachment(Base):
-    __tablename__ = 'user_attachments'
+# Define the path to the local folder you want to upload
+COUNTY_FOLDER = r'F:\discord'
 
-    id = Column(Integer, primary_key=True)
-    user_id = Column(Integer)
-    message_id = Column(Integer)
-    file_path = Column(String)
-    posted_at = Column(DateTime, default=datetime.now(tz=timezone.utc))  # Use timezone.utc
 
-# Prefix for bot commands
-PREFIX = './'
+# Load county configuration from JSON file
+with open('county_config.json', 'r') as config_file:
+    COUNTY_CONFIG = json.load(config_file)
 
 # Create a separate commands.Bot instance with all permissions
-bot = commands.Bot(command_prefix=PREFIX, intents=discord.Intents.all())
+bot = commands.Bot(command_prefix='./', intents=discord.Intents.all())
 
 # Dictionary to store attachment counts per user per day
 attachment_counts = defaultdict(lambda: defaultdict(int))
@@ -268,12 +264,40 @@ async def on_member_join(member):
         # Assign the "Must Verify" role to the new member
         await member.add_roles(must_verify_role)
 
+import sqlalchemy.exc
+
 # Maximum number of retries
 MAX_RETRIES = 5
 
 # Function to create session with connection pooling
 def get_session():
     return Session()
+
+# Command: Upload
+@bot.command()
+async def upload(ctx):
+    # Iterate through county configurations
+    for county, channel_name in COUNTY_CONFIG.items():
+        # Find the channel in the guild
+        channel = discord.utils.get(ctx.guild.text_channels, name=channel_name)
+        if not channel:
+            logger.error(f'Failed to find channel "{channel_name}" for county "{county}" in server "{ctx.guild.name}"')
+            continue
+
+        # Traverse the directory structure and upload files
+        county_folder_path = os.path.join(COUNTY_FOLDER, county)
+        if not os.path.exists(county_folder_path):
+            os.makedirs(county_folder_path)
+        for root, dirs, files in os.walk(county_folder_path):
+            for file in files:
+                if file.endswith('.jpg') or file.endswith('.jpeg') or file.endswith('.png'):
+                    file_path = os.path.join(root, file)
+                    try:
+                        await channel.send(file=discord.File(file_path))
+                        os.remove(file_path)
+                        logger.info(f'Uploaded file: {file_path}')
+                    except discord.HTTPException as e:
+                        logger.error(f'Failed to upload file: {file_path}')
 
 @bot.command(name='cp')
 async def check_posts_with_attachments(ctx):
@@ -291,11 +315,17 @@ async def check_posts_with_attachments(ctx):
             try:
                 # Query the database to count the number of posts with attachments made by the user in the past 7 days
                 session = get_session()
-                attachment_count = session.query(UserAttachment).filter(UserAttachment.user_id == ctx.author.id,
+                attachment_count = session.query(UserAttachment).filter(UserAttachment.user_id == bool(ctx.author.id),
                                                                         UserAttachment.posted_at >= start_date).count()
                 await ctx.send(f"You have made {attachment_count} post(s) with attachments in the past 7 days.")
                 session.close()  # Close the session after use
                 break  # Exit the loop if the query is successful
+            except sqlalchemy.exc.OperationalError as e:
+                if 'database is locked' in str(e):
+                    await ctx.send("Failed to fetch post count due to database lock. Please try again later.")
+                else:
+                    raise  # Re-raise any other exceptions
+                break  # Exit the loop if the database is locked
             except Exception as e:
                 logger.error(f"Error querying database: {e}")
                 if retry_count < MAX_RETRIES - 1:
@@ -303,8 +333,7 @@ async def check_posts_with_attachments(ctx):
                     logger.info(f"Retrying database query in {delay} seconds...")
                     await asyncio.sleep(delay)
                 else:
-                    await ctx.send("Failed to fetch post count due to database lock. Please try again later.")
-                    break  # Exit the loop if maximum retries reached
+                    await ctx.send("Failed to fetch post count due to unexpected error. Please try again later.")
                 retry_count += 1
     else:
         await ctx.send("You need to have the Member role to use this command.")
@@ -317,4 +346,4 @@ async def build_server(ctx):
     await ctx.send('Server setup complete.')
 
 # Run the bot with the provided token
-bot.run('YOUR_BOT_TOKEN')
+bot.run('YOUR_TOKEN_HERE')
